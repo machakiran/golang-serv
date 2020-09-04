@@ -99,9 +99,9 @@ workflows:
             branches:
               only:
                 - master
-                - circleci-project-setup
+                - circleci-project-setup  
       - deploy:
-          context: Deployment
+         # context: Deployment
           requires:
             - build
           filters:

@@ -94,9 +94,10 @@ workflows:
   # The build and deploy workflow
   build_and_deploy:
     jobs:
-      - build: 
-          requires:
-            - test
+      - build:
+           context: build  
+         # requires:
+          #  - test
       - deploy:
           context: Deployment
           requires:
@@ -105,4 +106,5 @@ workflows:
             branches:
               only:
                 - master
+                - circleci-project-setup
 

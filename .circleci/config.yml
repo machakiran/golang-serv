@@ -12,8 +12,8 @@ jobs:
       AWS_ACCOUNT_ID: "545622740090"
       AWS_DEFAULT_REGION: "ap-south-1"
       AWS_RESOURCE_NAME_PREFIX: "ecr-poc"
-      AWS_ACCESS_KEY_ID: "AKIAX6CNGJR5E4S34KN3"
-      AWS_SECRET_ACCESS_KEY: "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"
+      #AWS_ACCESS_KEY_ID: "AKIAX6CNGJR5E4S34KN3"
+      #AWS_SECRET_ACCESS_KEY: "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"
     steps:
       # Checkout the code from the branch into the working_directory
       - checkout
@@ -53,6 +53,8 @@ jobs:
       AWS_ACCOUNT_ID: "545622740090"
       AWS_DEFAULT_REGION: "ap-south-1"
       ECR_REPOSITORY_NAME: "ecr-poc"
+      AWS_ACCESS_KEY_ID: "AKIAX6CNGJR5E4S34KN3"
+      AWS_SECRET_ACCESS_KEY: "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"
     steps:
       # Checkout the code from the branch into the working_directory
       - checkout

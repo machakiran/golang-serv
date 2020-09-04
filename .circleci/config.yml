@@ -94,9 +94,9 @@ workflows:
   # The build and deploy workflow
   build_and_deploy:
     jobs:
-      - build:
-         # requires:
-         #   - test
+      - build: 
+          requires:
+            - test
       - deploy:
           context: Deployment
           requires:

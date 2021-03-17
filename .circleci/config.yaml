@@ -1,0 +1,187 @@
+version: 2
+jobs:
+  test:
+    working_directory: ~/go/src/batman
+    docker:
+      - image: circleci/golang:latest
+      - image: circleci/mongo:latest
+      - image: circleci/redis:latest
+    steps:
+      # Checkout the code from the branch into the working_directory
+      - checkout
+      - run:
+          command: |
+            go get golang.org/x/tools/cmd/cover
+            go generate
+            # go get github.com/mattn/goveralls
+      - run:
+          command: | # run test
+            export GOPRIVATE="github.com/exclcloudHub"
+            go test ./... -cover -coverprofile=coverage.out -count=1 -p 1
+            # echo $CODECOV_TOKEN
+            # $GOPATH/bin/goveralls -coverprofile=coverage.out -service=circle-ci
+      - run:
+          command: |
+            sudo apt install bc
+            max_coverage=96
+            total_coverage=$(go tool cover -func coverage.out | grep "total.*[0-9]*\.[0-9]%" | grep -Eo "[0-9*][0-9*]\.[0-9]")
+            echo "Total test coverage: "$total_coverage"%"
+            total_coverage=$(echo "($total_coverage+0.5)/1" | bc)
+            # if (( total_coverage < max_coverage));
+            # then
+            #   echo "coverage is lower than "$max_coverage"🖕";
+            #   exit -1;
+            # fi
+      - store_artifacts:
+          path: coverage.out
+          destination: test-coverage/coverage.out
+
+  build:
+    working_directory: ~/go/src/batman
+    docker:
+      - image: circleci/golang:latest
+    environment:
+      ECR_REPO_NAME: batman
+    steps:
+      - checkout
+      - setup_remote_docker
+      - run:
+          name: Build project and run tests against predefined payloads
+          command: |
+            export CGO_ENABLED=0
+            export GOPRIVATE="github.com/exclcloudHub"
+            go generate
+            go build -o batman -ldflags "-w -s"
+            docker build -t ${ECR_REPO_NAME}:latest .
+      - run:
+          name: Save image to an archive
+          command: |
+            mkdir docker-image
+            docker save -o docker-image/image.tar ${ECR_REPO_NAME}
+      - persist_to_workspace:
+          root: .
+          paths:
+            - docker-image
+  deploy: &deploy
+    working_directory: ~/go/src/batman
+    docker:
+      - image: google/cloud-sdk
+    environment:
+      ECR_REPO_NAME: batman
+    steps:
+      - checkout
+      - setup_remote_docker
+      - attach_workspace:
+          at: workspace
+      - run:
+          name: Show current branch
+          command: 'echo ${CIRCLE_BRANCH}'
+      - run:
+          name: Check Environment Variables
+          command: |
+            if [[ -z "${GCLOUD_SERVICE_KEY}" ]]; then
+               echo "GCLOUD_SERVICE_KEY is not set, will not be able to log into ECR."
+               exit 1
+            fi
+            if [[ -z "${GOOGLE_PROJECT_ID}" ]]; then
+               echo "GOOGLE_PROJECT_ID is not set, will not be able to log into ECR."
+               exit 1
+            fi
+            if [[ -z "${GOOGLE_COMPUTE_ZONE}" ]]; then
+               echo "GOOGLE_COMPUTE_ZONE is not set, will not be able to log into ECR."
+               exit 1
+            fi
+      - run:
+          name: Authenticate and configure Docker
+          command: |
+            echo $GCLOUD_SERVICE_KEY | gcloud auth activate-service-account --key-file=-
+            gcloud --quiet config set project ${GOOGLE_PROJECT_ID}
+            # gcloud --quiet config set compute/zone ${GOOGLE_COMPUTE_ZONE}
+            gcloud auth configure-docker --quiet
+            echo "gcloud cli configuration is completed!"
+      - run:
+          name: Setup common environment variables
+          command: |
+            echo 'export FULL_IMAGE_NAME="ECR.io/${GOOGLE_PROJECT_ID}/$ECR_REPO_NAME"' >> $BASH_ENV
+            branchName=$(echo ${CIRCLE_BRANCH} | sed 's/\//-/g')
+            gitRev=$(git rev-parse --short HEAD | sed 's/\//-/g')
+            echo 'export IMAGE_TAG_NAME="'$gitRev'"' >> $BASH_ENV
+      - run:
+          name: Export kubectl config using gcloud
+          command: |
+            # Setup kubectl config using gcloud utility
+            gcloud container clusters get-credentials $K8_CLUSTER_NAME --zone $GOOGLE_COMPUTE_ZONE --project $GOOGLE_PROJECT_ID
+      - run:
+          name: Load image
+          command: |
+            docker load --input workspace/docker-image/image.tar
+      - run:
+          name: Push image to ECR and Deploy to K8
+          command: |
+            gcloud auth configure-docker     # Configure Docker creds for ECR
+
+            # Tag images from the workspace
+            docker tag $ECR_REPO_NAME:latest $FULL_IMAGE_NAME:$IMAGE_TAG_NAME
+            docker tag $ECR_REPO_NAME:latest $FULL_IMAGE_NAME:latest
+            docker push $FULL_IMAGE_NAME:$IMAGE_TAG_NAME
+            docker push $FULL_IMAGE_NAME:latest
+
+            kubectl set image deployments/batman batman=$FULL_IMAGE_NAME:$IMAGE_TAG_NAME    # Update the docker image in K8 cluster
+
+  deploy_to_production:
+    <<: *deploy
+  deploy_to_staging:
+    <<: *deploy
+  deploy_to_internal_exclcloud:
+    <<: *deploy
+
+workflows:
+  version: 2
+  build_and_deploy:
+    jobs:
+    - test:
+        filters:
+          tags:
+            only: /.*/
+          branches:
+            only: /.*/
+
+    - build:
+        requires:
+          - test
+        filters:
+          tags:
+            only: /.*/
+          branches:
+            only: /.*/
+
+    - deploy_to_staging:
+        context: gcp_staging
+        requires:
+          - build
+        filters:
+          tags:
+            only: /^(stage)-v\d*.\d*.\d*$/
+          branches:
+            ignore: /.*/
+
+    - deploy_to_internal_exclcloud:
+        context: gcp_dadar
+        requires:
+          - build
+        filters:
+          tags:
+            only: /^(internal)-v\d*.\d*.\d*$/
+          branches:
+            ignore: /.*/
+
+    - deploy_to_production:
+        context: gcp_prod
+        requires:
+          - build
+        filters:
+          branches:
+            only:
+              - master
+          tags:
+            ignore: /.*/

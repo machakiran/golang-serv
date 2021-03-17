@@ -1,0 +1,115 @@
+version: 2
+jobs:
+  build:
+    working_directory: ~/go/src/golang-serv
+    docker:
+      - image: circleci/golang:latest
+    environment:
+      ECR_REPO_NAME: golang-serv
+    steps:
+      - checkout
+      - setup_remote_docker
+      - run:
+          name: Build project and run tests against predefined payloads
+          command: |
+            go generate
+            go build -o golang-serv -ldflags "-w -s"
+            docker build -t ${ECR_REPO_NAME}:latest .
+      - run:
+          name: Save image to an archive
+          command: |
+            mkdir docker-image
+            docker save -o docker-image/image.tar ${ECR_REPO_NAME}
+      - persist_to_workspace:
+          root: .
+          paths:
+            - docker-image
+
+  deploy: 
+    working_directory: ~/go/src/golang-serv
+    docker:
+      - image: google/cloud-sdk
+    environment:
+      ECR_REPO_NAME: golang-serv
+    steps:
+      - checkout
+      - setup_remote_docker
+      - attach_workspace:
+          at: workspace
+      - run:
+          name: Show current branch
+          command: 'echo ${CIRCLE_BRANCH}'
+      - run:
+          name: Check Environment Variables
+          command: |
+            if [[ -z "${GCLOUD_SERVICE_KEY}" ]]; then
+               echo "GCLOUD_SERVICE_KEY is not set, will not be able to log into ECR."
+               exit 1
+            fi
+            if [[ -z "${GOOGLE_PROJECT_ID}" ]]; then
+               echo "GOOGLE_PROJECT_ID is not set, will not be able to log into ECR."
+               exit 1
+            fi
+            if [[ -z "${GOOGLE_COMPUTE_ZONE}" ]]; then
+               echo "GOOGLE_COMPUTE_ZONE is not set, will not be able to log into ECR."
+               exit 1
+            fi
+      - run:
+          name: Authenticate and configure Docker
+          command: |
+            echo $GCLOUD_SERVICE_KEY | gcloud auth activate-service-account --key-file=-
+            gcloud --quiet config set project ${GOOGLE_PROJECT_ID}
+            # gcloud --quiet config set compute/zone ${GOOGLE_COMPUTE_ZONE}
+            gcloud auth configure-docker --quiet
+            echo "gcloud cli configuration is completed!"
+      - run:
+          name: Setup common environment variables
+          command: |
+            echo 'export FULL_IMAGE_NAME="ECR.io/${GOOGLE_PROJECT_ID}/$ECR_REPO_NAME"' >> $BASH_ENV
+            branchName=$(echo ${CIRCLE_BRANCH} | sed 's/\//-/g')
+            gitRev=$(git rev-parse --short HEAD | sed 's/\//-/g')
+            echo 'export IMAGE_TAG_NAME="'$gitRev'"' >> $BASH_ENV
+      - run:
+          name: Export kubectl config using gcloud
+          command: |
+            # Setup kubectl config using gcloud utility
+            gcloud container clusters get-credentials $K8_CLUSTER_NAME --zone $GOOGLE_COMPUTE_ZONE --project $GOOGLE_PROJECT_ID
+      - run:
+          name: Load image
+          command: |
+            docker load --input workspace/docker-image/image.tar
+      - run:
+          name: Push image to ECR and Deploy to K8
+          command: |
+            gcloud auth configure-docker     # Configure Docker creds for ECR
+
+            # Tag images from the workspace
+            docker tag $ECR_REPO_NAME:latest $FULL_IMAGE_NAME:$IMAGE_TAG_NAME
+            docker tag $ECR_REPO_NAME:latest $FULL_IMAGE_NAME:latest
+            docker push $FULL_IMAGE_NAME:$IMAGE_TAG_NAME
+            docker push $FULL_IMAGE_NAME:latest
+
+            kubectl set image deployments/golang-serv golang-serv=$FULL_IMAGE_NAME:$IMAGE_TAG_NAME    # Update the docker image in K8 cluster
+
+
+workflows:
+  version: 2
+  build_and_deploy:
+    jobs:
+    - build:
+        filters:
+          tags:
+            only: /.*/
+          branches:
+            only: /.*/
+
+    - deploy:
+        context: gcp_prod
+        requires:
+          - build
+        filters:
+          branches:
+            only:
+              - master
+          tags:
+            ignore: /.*/

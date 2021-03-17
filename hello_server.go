@@ -29,6 +29,7 @@ func main() {
 	r := mux.NewRouter()
 
 	r.HandleFunc("/", handler)
+	r.HandleFunc("/health", handler)
 
 	srv := &http.Server{
 		Handler:      r,
